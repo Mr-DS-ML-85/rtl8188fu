@@ -1,105 +1,157 @@
-RTL8188FU driver for Linux kernel 4.15.x ~ 6.7.x (Linux Mint, Ubuntu or Debian Derivatives)
+# RTL8188FU Linux Driver — Patched
 
-info: rtl8188fu support added to rtl8xxxu module of Linux kernel with version 6.2. 
+One-click compile and install for the Realtek RTL8188FU USB WiFi adapter on Linux.
 
-------------------
+Includes a patch for OEM variant USB ID `0xf149` (`0bda:f149`) which is not present in the upstream Rockchip-sourced driver — the most common reason this dongle loads its module but never creates a network interface.
 
-## How to install
+---
 
-`sudo apt-get install build-essential git dkms linux-headers-$(uname -r)`
+## Supported Devices
 
-`git clone https://github.com/kelebek333/rtl8188fu`
+| USB ID | Description |
+|--------|-------------|
+| `0bda:f179` | RTL8188FU standard |
+| `0bda:f149` | RTL8188FU OEM variant (e.g. `Realtek 802.11n`) |
 
-`sudo dkms install ./rtl8188fu`
+Check yours with:
+```bash
+lsusb | grep -i realtek
+```
 
-`sudo cp ./rtl8188fu/firmware/rtl8188fufw.bin /lib/firmware/rtlwifi/`
+---
 
-------------------
+## Requirements
 
-## Configuration
+- Linux kernel with headers installed
+- `build-essential` (gcc, make)
+- Root / sudo access
 
-#### Disable Power Management
+```bash
+sudo apt install build-essential linux-headers-$(uname -r)
+```
 
-Run following commands for disable power management and plugging/replugging issues.
+---
 
-`sudo mkdir -p /etc/modprobe.d/`
+## Quick Install
 
-`sudo touch /etc/modprobe.d/rtl8188fu.conf`
+```bash
+git clone https://github.com/youruser/rtl8188fu /usr/src/rtl8188fu-1.0
+cd /usr/src/rtl8188fu-1.0
+sudo bash install.sh
+```
 
-`echo "options rtl8188fu rtw_power_mgnt=0 rtw_enusbss=0 rtw_ips_mode=0" | sudo tee /etc/modprobe.d/rtl8188fu.conf`
+That's it. The script will:
 
-#### Disable MAC Address Spoofing
+1. Check and install missing build dependencies
+2. Patch `usb_intf.c` to add the `0xF149` OEM USB ID (idempotent — safe to run twice)
+3. Remove conflicting drivers (`r8188eu`, `rtl8xxxu`)
+4. Blacklist competing drivers
+5. Compile the driver against your running kernel
+6. Install and load the module
+7. Report the detected wireless interface
 
-Run following commands for disabling MAC Address Spoofing (Note: This is not needed on Ubuntu based distributions. MAC Address Spoofing is already disable on Ubuntu base).
+---
 
-`sudo mkdir -p /etc/NetworkManager/conf.d/`
+## Usage
 
-`sudo touch /etc/NetworkManager/conf.d/disable-random-mac.conf`
+```bash
+sudo bash install.sh [command]
+```
 
-`echo -e "[device]\nwifi.scan-rand-mac-address=no" | sudo tee /etc/NetworkManager/conf.d/disable-random-mac.conf`
+| Command | Description |
+|---------|-------------|
+| `install` | Full patch, compile, and install *(default)* |
+| `uninstall` | Remove driver, module, and blacklist |
+| `patch-only` | Apply USB ID patch to source without building |
 
-#### Blacklist (alias) for kernel 5.15 and 5.16 (No needed for kernel 5.17 and up)
+---
 
-If you are using kernel 5.15 and 5.16, you must create a configuration file with following command for preventing to conflict rtl8188fu module with built-in r8188eu module.
+## Verify It Works
 
-`echo 'alias usb:v0BDApF179d*dc*dsc*dp*icFFiscFFipFFin* rtl8188fu' | sudo tee /etc/modprobe.d/r8188eu-blacklist.conf`
+After install, confirm the interface exists:
+```bash
+ip -br link          # look for wlan0 or wlxXXXX
+iw dev               # wireless interface details
+dmesg | grep RTL871X # driver init log
+```
 
-#### Blacklist (alias) for kernel 6.2 and up
+Expected dmesg output on success:
+```
+RTL871X: module init start
+RTL871X: rtl8188fu v4.3.23.6_20964.20170110
+usbcore: registered new interface driver rtl8188fu
+RTL871X: module init ret=0
+rtl8188fu 2-1.x:1.0 wlan0: renamed from wlan0
+```
 
-If you are using kernel 6.2 and up, you must create a configuration file with following command for preventing to conflict rtl8188fu module with built-in rtl8xxxu module.
+---
 
-`echo 'alias usb:v0BDApF179d*dc*dsc*dp*icFFiscFFipFFin* rtl8188fu' | sudo tee /etc/modprobe.d/rtl8xxxu-blacklist.conf`
+## Troubleshooting
 
-##### Then you must update initramfs
+**Module loads but no interface appears**
 
-For initramfs
+Your dongle's USB ID is likely not in the driver table. Check:
+```bash
+lsusb | grep -i realtek
+# Example output: Bus 002 Device 004: ID 0bda:f149 Realtek ...
+```
+If it shows something other than `f179` or `f149`, open an issue with your USB ID and we'll add it.
 
-`sudo update-initramfs -u`
+**Competing driver takes over after reboot**
 
-For dracut
+The blacklist file at `/etc/modprobe.d/blacklist-r8188eu.conf` should prevent this. If not:
+```bash
+sudo modprobe -r r8188eu rtl8xxxu
+sudo modprobe rtl8188fu
+```
 
-`sudo dracut -q --force`
+**Kernel update breaks the driver**
 
-##### Enable rtl8188fu module
+Rerun the installer — it always compiles against the currently running kernel:
+```bash
+sudo bash install.sh
+```
 
-Run following command for up to kernel 6.1
+**EEPROM ID invalid warning in dmesg**
 
-`sudo modprobe rtl8188fu`
+```
+EEPROM ID(0xffff) is invalid!!
+```
+This appears during driver switching attempts and is harmless once `rtl8188fu` takes over. Ignore it if your interface comes up.
 
-Run following commands for kernel 6.2 and up
+---
 
-`sudo modprobe -r rtl8188fu`
+## What the Patch Does
 
-`sudo modprobe rtl8188fu`
+The Rockchip-sourced driver only includes USB product ID `0xF179` in its device table:
 
-------------------
+```c
+// Before patch — only one ID:
+{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xF179, 0xff, 0xff, 0xff), .driver_info = RTL8188F},
+```
 
-## How to uninstall
+The script adds the OEM variant via `sed` (no manual editing, no syntax errors):
 
-`sudo dkms remove rtl8188fu/1.0 --all`
+```c
+// After patch — both IDs:
+{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xF179, 0xff, 0xff, 0xff), .driver_info = RTL8188F},
+{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xF149, 0xff, 0xff, 0xff), .driver_info = RTL8188F},
+```
 
-`sudo rm -f /lib/firmware/rtlwifi/rtl8188fufw.bin`
+The chip is identical — only the USB product ID registered by the OEM differs.
 
-`sudo rm -f /etc/modprobe.d/rtl8188fu.conf`
+---
 
+## Tested On
 
-------------------
+| Kernel | Distro | Status |
+|--------|--------|--------|
+| 7.0.0-15-generic | Ubuntu-based | ✅ Working |
 
-## How to install from PPA repository
+PRs welcome for other kernel/distro confirmations.
 
-You can install rtl8188fu driver with following commands from PPA.
+---
 
-for xUbuntu 16.04-18.04-20.04-22.04-23.04-23.10 / Linux Mint 20.x-21.x
+## License
 
-`sudo add-apt-repository ppa:kelebek333/kablosuz`
-
-`sudo apt-get update`
-
-`sudo apt install rtl8188fu-dkms`
-
-
-You can purge packages with following commands
-
-`sudo apt purge rtl8188fu-dkms`
-
-------------------
+GPL v2 — see original driver source for full license terms.
