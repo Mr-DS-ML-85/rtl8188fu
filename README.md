@@ -141,25 +141,28 @@ Fixed 6 undefined behavior bugs detected by the kernel's UBSAN (Undefined Behavi
 
 Fixed undefined behavior in `rtw_mp.c` where `sprintf(data, "%s%x ", data, psd_data)` read and wrote the same buffer. Replaced with offset-based appending.
 
-### Patch 4: WPA3-SAE Support
+### Patch 4: WPA3-SAE Support — ⚠️ DOES NOT WORK (Firmware Limitation)
 
-Full WPA3-SAE (Simultaneous Authentication of Equals) support for connecting to WPA3 networks:
+**WPA3-SAE is fundamentally impossible with the RTL8188FU.** This is not a driver bug — it's a hardware/firmware limitation that cannot be fixed in software.
 
-- **RX descriptor fix** (`rtl8188f_rxdesc.c`): The driver was falsely reporting unencrypted management frames as decrypted, which broke 802.11w (Protected Management Frames). Now checks both `swdec` and `encrypt` fields from the RX descriptor.
-- **SAE AKM suite** (`ioctl_cfg80211.c`): Added `WLAN_AKM_SUITE_SAE` (0x000FAC08) handling in the key management switch.
-- **SAE auth type** (`ioctl_cfg80211.c`): Added `NL80211_AUTHTYPE_SAE` case in the auth type handler — maps to open auth since SAE handshake happens in userspace.
-- **External auth** (`ioctl_cfg80211.c`): Added `external_auth` cfg80211_ops callback. When SAE is detected, the driver calls `cfg80211_external_auth_request()` to hand off the Dragonfly handshake to wpa_supplicant. After SAE completes, the callback proceeds with normal open auth + assoc.
-- **MFP capability** (`ioctl_cfg80211.c`): Set `NL80211_FEATURE_SAE` and `wiphy_ext_feature_set(NL80211_EXT_FEATURE_MFP_OPTIONAL)` so NetworkManager/nmcli auto-detects SAE support.
-- **Security struct** (`rtw_security.h`): Added `wpa3_sae` flag and SAE connection parameter storage fields.
+**What was implemented (driver side works):**
+- **RX descriptor fix** (`rtl8188f_rxdesc.c`): Fixed unencrypted management frames being falsely reported as decrypted (broke 802.11w/PMF).
+- **SAE AKM suite** (`ioctl_cfg80211.c`): Added `WLAN_AKM_SUITE_SAE` handling.
+- **External auth** (`ioctl_cfg80211.c`): Added `external_auth` cfg80211_ops callback with deferred work + `genlmsg_multicast_allns()` to deliver `NL80211_CMD_EXTERNAL_AUTH` events to wpa_supplicant.
+- **MFP capability**: Set `NL80211_FEATURE_SAE` and `NL80211_EXT_FEATURE_MFP_OPTIONAL` so NetworkManager offers WPA3.
 
-### How WPA3-SAE Works
+**Why it fails:**
+1. Driver detects SAE, sends `NL80211_CMD_EXTERNAL_AUTH` to wpa_supplicant ✅
+2. wpa_supplicant receives it, derives SAE keys, sends SAE Commit via raw frame ✅
+3. AP receives commit, sends back SAE Confirm (AUTH frame) ✅
+4. **RTL8188FU firmware receives the AUTH frame but handles it internally (open-system auth) and NEVER passes it to the host driver** ❌
+5. wpa_supplicant never gets the SAE Confirm → 10s timeout → disconnect
 
-SAE authentication is a two-layer process:
+**Root cause:** The RTL8188FU firmware uses **Firmware MLME** — it handles authentication internally. For SAE to work, the firmware would need **SAE offload** support (like Broadcom's `SAE_OFFLOAD` feature). Realtek discontinued RTL8188FU development in mid-2023 and no such firmware exists.
 
-1. **Userspace (wpa_supplicant)**: Handles the Dragonfly key exchange (SAE Commit/Confirm frames) — this is the cryptographic handshake that proves both sides know the password without transmitting it.
-2. **Driver**: Handles open system auth + association with the AP, and passes management frames between the AP and wpa_supplicant.
+**Confirmed:** This same limitation affects other Realtek USB drivers (rtl8812au, rtl8814au). The in-kernel `rtl8xxxu` driver also lacks SAE support.
 
-The driver signals SAE support via `NL80211_FEATURE_SAE` and `NL80211_EXT_FEATURE_MFP_OPTIONAL`, so nmcli/nmtui automatically offer WPA3 as a key management option.
+**Workaround:** Use WPA2, or use a Mediatek/Atheros-based USB adapter for WPA3.
 
 ---
 

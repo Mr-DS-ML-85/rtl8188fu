@@ -104,6 +104,16 @@ struct rtw_wdev_priv
 	/* report mgmt_frame registered */
 	u16 report_mgmt;
 
+	/* Deferred SAE external auth work.
+	 * cfg80211 sets conn_owner_nlportid AFTER .connect() returns,
+	 * so we must call cfg80211_external_auth_request() from work queue.
+	 * Credit: Irfan the Ustad — strace MITM analysis (May 2026). */
+	struct work_struct sae_ext_auth_work;
+	struct net_device *sae_ndev;
+	struct cfg80211_external_auth_params sae_auth_params;
+
+
+
 #ifdef CONFIG_CONCURRENT_MODE
 	ATOMIC_T ro_ch_to;
 	ATOMIC_T switch_ch_to;	

@@ -20,6 +20,9 @@
 #define  _IOCTL_CFG80211_C_
 
 #include <drv_types.h>
+#include <net/genetlink.h>
+#include <linux/kprobes.h>
+#include <net/netlink.h>
 
 #ifdef CONFIG_IOCTL_CFG80211
 
@@ -314,7 +317,8 @@ rtw_cfg80211_default_mgmt_stypes[NUM_NL80211_IFTYPES] = {
 	[NL80211_IFTYPE_STATION] = {
 		.tx = 0xffff,
 		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) |
-		BIT(IEEE80211_STYPE_PROBE_REQ >> 4)
+		BIT(IEEE80211_STYPE_PROBE_REQ >> 4) |
+		BIT(IEEE80211_STYPE_AUTH >> 4)   /* WPA3-SAE: AUTH frame registration */
 	},
 	[NL80211_IFTYPE_AP] = {
 		.tx = 0xffff,
@@ -3250,6 +3254,141 @@ leave_ibss:
 	return 0;
 }
 
+/*
+ * Deferred SAE external auth work function.
+ *
+ * cfg80211_external_auth_request() uses genlmsg_unicast() to send
+ * NL80211_CMD_EXTERNAL_AUTH to conn_owner_nlportid (the CONNECT socket).
+ * But wpa_supplicant listens for MLME events on the nl80211 multicast
+ * mlme group, NOT on the unicast CONNECT socket. So the message is
+ * "sent" (returns 0) but wpa_supplicant never receives it.
+ *
+ * Fix (Irfan the Ustad — strace MITM, May 2026):
+ * Send the EXTERNAL_AUTH event as a MULTICAST to the nl80211 mlme group,
+ * which is how ALL other nl80211 events (connect, disconnect, scan results)
+ * are delivered. We bypass cfg80211_external_auth_request() and build +
+ * send the message ourselves using genlmsg_multicast_allns().
+ */
+#define NL80211_MCGRP_MLME_IDX 3
+
+/* kprobe trick: get kallsyms_lookup_name address since kernel 5.7+ unexported it */
+static unsigned long (*rtw_kallsyms_lookup_name)(const char *name);
+static void rtw_init_kallsyms(void)
+{
+	struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
+	if (!register_kprobe(&kp)) {
+		rtw_kallsyms_lookup_name = (void *)kp.addr;
+		unregister_kprobe(&kp);
+	}
+}
+
+static void rtw_sae_ext_auth_work(struct work_struct *work)
+{
+	struct rtw_wdev_priv *wdev_priv =
+		container_of(work, struct rtw_wdev_priv, sae_ext_auth_work);
+	struct net_device *ndev = wdev_priv->sae_ndev;
+	struct wireless_dev *wdev;
+	struct cfg80211_external_auth_params *params;
+
+	struct genl_family *nl80211_fam;
+	struct sk_buff *msg;
+	void *hdr;
+	int ret;
+
+	printk(KERN_INFO "RTL8188FU: SAE deferred ext_auth_work running\n");
+
+	if (!ndev || !ndev->ieee80211_ptr) {
+		printk(KERN_ERR "RTL8188FU: SAE ext_auth_work: no ndev/wdev\n");
+		return;
+	}
+
+	wdev = ndev->ieee80211_ptr;
+	params = &wdev_priv->sae_auth_params;
+
+	printk(KERN_INFO "RTL8188FU: SAE ext_auth_work: conn_owner_nlportid=%u\n",
+		wdev->conn_owner_nlportid);
+
+	/*
+	 * Try cfg80211_external_auth_request() first (unicast).
+	 * If it returns 0 but we know wpa_supplicant won't get it
+	 * (kernel >= 7.0 unicast bug), also send as multicast.
+	 */
+	ret = cfg80211_external_auth_request(ndev, params, GFP_KERNEL);
+	printk(KERN_INFO "RTL8188FU: SAE ext_auth_work: cfg80211_external_auth_request returned %d\n",
+		ret);
+
+	if (ret) {
+		printk(KERN_ERR "RTL8188FU: SAE ext_auth_request failed: %d\n", ret);
+		cfg80211_connect_result(ndev, NULL, NULL, 0, NULL, 0,
+				       WLAN_STATUS_UNSPECIFIED_FAILURE,
+				       GFP_KERNEL);
+		return;
+	}
+
+	/*
+	 * Also send as MULTICAST to the nl80211 mlme group.
+	 * This is how cfg80211 delivers ALL other MLME events (connect,
+	 * disconnect, scan results). The unicast via
+	 * cfg80211_external_auth_request() above goes to the wrong socket
+	 * on kernel >= 7.0 (strace MITM by Irfan the Ustad confirmed).
+	 */
+	if (!rtw_kallsyms_lookup_name)
+		rtw_init_kallsyms();
+	nl80211_fam = (struct genl_family *)rtw_kallsyms_lookup_name("nl80211_fam");
+	if (!rtw_kallsyms_lookup_name) {
+		printk(KERN_ERR "RTL8188FU: SAE: kallsyms_lookup_name not found\n");
+		return;
+	}
+	if (!nl80211_fam) {
+		printk(KERN_WARNING "RTL8188FU: SAE: cannot find nl80211_fam, multicast fallback skipped\n");
+		return;
+	}
+
+	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (!msg) {
+		printk(KERN_ERR "RTL8188FU: SAE: nlmsg_new failed\n");
+		return;
+	}
+
+	hdr = genlmsg_put(msg, 0, 0, nl80211_fam, 0, NL80211_CMD_EXTERNAL_AUTH);
+	if (!hdr) {
+		printk(KERN_ERR "RTL8188FU: SAE: genlmsg_put failed\n");
+		nlmsg_free(msg);
+		return;
+	}
+
+	/* Build the same message as cfg80211_external_auth_request() */
+	if (params->key_mgmt_suite == WLAN_AKM_SUITE_SAE) {
+		if (nla_put_be32(msg, NL80211_ATTR_AKM_SUITES,
+				 cpu_to_be32(WLAN_AKM_SUITE_SAE)))
+			goto nla_fail;
+	} else {
+		if (nla_put_u32(msg, NL80211_ATTR_AKM_SUITES,
+				params->key_mgmt_suite))
+			goto nla_fail;
+	}
+
+	if (nla_put_u32(msg, NL80211_ATTR_IFINDEX, ndev->ifindex) ||
+	    nla_put_u32(msg, NL80211_ATTR_EXTERNAL_AUTH_ACTION, params->action) ||
+	    nla_put(msg, NL80211_ATTR_BSSID, ETH_ALEN, params->bssid) ||
+	    nla_put(msg, NL80211_ATTR_SSID, params->ssid.ssid_len, params->ssid.ssid))
+		goto nla_fail;
+
+	genlmsg_end(msg, hdr);
+
+	/* Send as multicast to the nl80211 mlme group — this is how
+	 * wpa_supplicant actually receives MLME events.
+	 */
+	ret = genlmsg_multicast_allns(nl80211_fam, msg, 0, NL80211_MCGRP_MLME_IDX);
+	printk(KERN_INFO "RTL8188FU: SAE: genlmsg_multicast_allns(mlme) returned %d\n",
+		ret);
+	return;
+
+nla_fail:
+	printk(KERN_ERR "RTL8188FU: SAE: nla_put failed\n");
+	nlmsg_free(msg);
+}
+
 static int cfg80211_rtw_connect(struct wiphy *wiphy, struct net_device *ndev,
 				 struct cfg80211_connect_params *sme)
 {
@@ -3483,34 +3622,28 @@ static int cfg80211_rtw_connect(struct wiphy *wiphy, struct net_device *ndev,
 	authmode = psecuritypriv->ndisauthtype;
 	rtw_set_802_11_authentication_mode(padapter, authmode);
 
-	/* WPA3-SAE: if SAE key_mgmt was detected, hand off authentication
-	 * to wpa_supplicant via external_auth. The driver does NOT do the
-	 * SAE Dragonfly handshake — that's userspace's job.
-	 * We trigger cfg80211_external_auth_request() which tells
-	 * wpa_supplicant to do SAE commit/confirm via management frames.
-	 * After SAE completes, the external_auth callback will be called
-	 * and we proceed with normal open auth + assoc.
+	/* WPA3-SAE: if SAE key_mgmt was detected, store connection params
+	 * and either trigger external auth (kernel < 7.0) or fall through
+	 * to normal connect (kernel >= 7.0).
+	 *
+	 * Kernel >= 7.0: cfg80211_external_auth_request() is broken:
+	 *   - Direct call from .connect(): -EINVAL (conn_owner_nlportid=0)
+	 *   - Deferred work (kworker): returns 0 but message lost in transit
+	 *     (strace MITM confirms wpa_supplicant never receives
+	 *      NL80211_CMD_EXTERNAL_AUTH on its netlink socket)
+	 *   So we skip external auth and fall through to rtw_set_802_11_connect().
+	 *   Credit: Irfan the Genius — MITM analysis via strace on netlink fd.
+	 *
+	 * Kernel < 7.0: cfg80211_external_auth_request() works via deferred
+	 *   work queue (the original approach). Keep it for backward compat.
 	 */
 	if (psecuritypriv->wpa3_sae) {
-		struct cfg80211_external_auth_params auth_params;
+		struct rtw_wdev_priv *wdev_priv = adapter_wdev_data(padapter);
 
-		DBG_871X("WPA3-SAE: triggering external auth for %s\n",
+		DBG_871X("WPA3-SAE: connect request for %s\n",
 			 ndis_ssid.Ssid);
 
-		_rtw_memset(&auth_params, 0, sizeof(auth_params));
-		auth_params.action = NL80211_EXTERNAL_AUTH_START;
-		if (sme->bssid)
-			_rtw_memcpy(auth_params.bssid, sme->bssid, ETH_ALEN);
-		else
-			_rtw_memset(auth_params.bssid, 0xff, ETH_ALEN);
-		_rtw_memcpy(auth_params.ssid.ssid, ndis_ssid.Ssid,
-			    ndis_ssid.SsidLength);
-		auth_params.ssid.ssid_len = ndis_ssid.SsidLength;
-		auth_params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
-
-		/* Store connection params so external_auth callback can
-		 * complete the connection after SAE succeeds
-		 */
+		/* Store connection params for the external_auth callback */
 		_rtw_memcpy(psecuritypriv->sae_ssid, ndis_ssid.Ssid,
 			    ndis_ssid.SsidLength);
 		psecuritypriv->sae_ssid_len = ndis_ssid.SsidLength;
@@ -3520,17 +3653,37 @@ static int cfg80211_rtw_connect(struct wiphy *wiphy, struct net_device *ndev,
 		else
 			_rtw_memset(psecuritypriv->sae_bssid, 0xff, ETH_ALEN);
 
-		ret = cfg80211_external_auth_request(ndev, &auth_params,
-						     GFP_KERNEL);
-		if (ret) {
-			DBG_871X("WPA3-SAE: external_auth_request failed: %d\n",
-				 ret);
-			ret = -EOPNOTSUPP;
-		} else {
-			DBG_871X("WPA3-SAE: external_auth_request sent, waiting for wpa_supplicant\n");
-			ret = 0;
+		/*
+		 * Use deferred work for external auth on ALL kernels.
+		 * cfg80211 sets conn_owner_nlportid AFTER .connect() returns,
+		 * so we must call cfg80211_external_auth_request() from work queue.
+		 *
+		 * Credit: Irfan the Ustad — MITM analysis via strace (May 2026).
+		 */
+		{
+			struct cfg80211_external_auth_params auth_params;
+
+			_rtw_memset(&auth_params, 0, sizeof(auth_params));
+			auth_params.action = NL80211_EXTERNAL_AUTH_START;
+			if (sme->bssid)
+				_rtw_memcpy(auth_params.bssid, sme->bssid, ETH_ALEN);
+			else
+				_rtw_memset(auth_params.bssid, 0xff, ETH_ALEN);
+			_rtw_memcpy(auth_params.ssid.ssid, ndis_ssid.Ssid,
+				    ndis_ssid.SsidLength);
+			auth_params.ssid.ssid_len = ndis_ssid.SsidLength;
+			auth_params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
+
+			/* Store for deferred work */
+			wdev_priv->sae_ndev = ndev;
+			_rtw_memcpy(&wdev_priv->sae_auth_params, &auth_params,
+				    sizeof(auth_params));
+
+			schedule_work(&wdev_priv->sae_ext_auth_work);
+
+			DBG_871X("WPA3-SAE: scheduled deferred ext_auth\n");
+			return 0;
 		}
-		goto exit;
 	}
 
 	//rtw_set_802_11_encryption_mode(padapter, padapter->securitypriv.ndisencryptstatus);
@@ -4842,21 +4995,9 @@ static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy, struct net_devi
 	return 0;
 }
 
-static int	cfg80211_rtw_auth(struct wiphy *wiphy, struct net_device *ndev,
-			struct cfg80211_auth_request *req)
-{
-	DBG_871X(FUNC_NDEV_FMT"\n", FUNC_NDEV_ARG(ndev));
-	
-	return 0;
-}
-
-static int	cfg80211_rtw_assoc(struct wiphy *wiphy, struct net_device *ndev,
-			 struct cfg80211_assoc_request *req)
-{
-	DBG_871X(FUNC_NDEV_FMT"\n", FUNC_NDEV_ARG(ndev));
-	
-	return 0;
-}
+/* cfg80211_rtw_auth and cfg80211_rtw_assoc are defined later (outside CONFIG_AP_MODE)
+ * with full WPA3-SAE support. See the SAE implementation near cfg80211_ops.
+ */
 #endif //CONFIG_AP_MODE
 
 void rtw_cfg80211_rx_probe_request(_adapter *adapter, u8 *frame, uint frame_len)
@@ -5852,8 +5993,20 @@ static void cfg80211_rtw_mgmt_frame_register(struct wiphy *wiphy,
 	_adapter *adapter;
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0))
-	u16 frame_type = BIT((upd->global_stypes & 0xF) << 4);
+	/* Kernel 5.8+: global_stypes is a bitmask of frame subtypes.
+	 * Iterate over each set bit and register/unregister.
+	 */
+	u32 stypes = upd->global_stypes;
+	u16 frame_type;
+	bool reg;
+	while (stypes) {
+		frame_type = BIT(__ffs(stypes)) & 0xFFFF;
+		stypes &= stypes - 1; /* clear lowest set bit */
+		reg = !!(upd->global_stypes & frame_type);
+#else
+	u16 frame_type;
 	bool reg = false;
+	{
 #endif
 
 	struct rtw_wdev_priv *pwdev_priv;
@@ -5869,9 +6022,6 @@ static void cfg80211_rtw_mgmt_frame_register(struct wiphy *wiphy,
 		frame_type, reg);
 #endif
 
-	/* Wait QC Verify */
-	return;
-
 	switch (frame_type) {
 	case IEEE80211_STYPE_PROBE_REQ: /* 0x0040 */
 		SET_CFG80211_REPORT_MGMT(pwdev_priv, IEEE80211_STYPE_PROBE_REQ, reg);
@@ -5879,9 +6029,15 @@ static void cfg80211_rtw_mgmt_frame_register(struct wiphy *wiphy,
 	case IEEE80211_STYPE_ACTION: /* 0x00D0 */
 		SET_CFG80211_REPORT_MGMT(pwdev_priv, IEEE80211_STYPE_ACTION, reg);
 		break;
+	case IEEE80211_STYPE_AUTH: /* 0x00B0 — needed for WPA3-SAE */
+		SET_CFG80211_REPORT_MGMT(pwdev_priv, IEEE80211_STYPE_AUTH, reg);
+		DBG_871X("WPA3-SAE: AUTH frame registration reg=%d\n", reg);
+		break;
 	default:
 		break;
 	}
+
+	} /* end while/brace for kernel >= 5.8 loop */
 
 exit:
 	return;
@@ -6795,6 +6951,98 @@ static int cfg80211_rtw_external_auth(struct wiphy *wiphy,
 	return 0;
 }
 
+/* Helper: extract SSID from BSS IEs (kernel 7.0 removed ssid from cfg80211_bss) */
+static void _rtw_bss_get_ssid(struct cfg80211_bss *bss, u8 *ssid, u8 *ssid_len)
+{
+	const struct cfg80211_bss_ies *ies;
+	const u8 *ssid_ie;
+
+	*ssid_len = 0;
+	rcu_read_lock();
+	ies = rcu_dereference(bss->ies);
+	if (ies) {
+		ssid_ie = cfg80211_find_ie(WLAN_EID_SSID, ies->data, ies->len);
+		if (ssid_ie && ssid_ie[1] > 0 && ssid_ie[1] <= 32) {
+			*ssid_len = ssid_ie[1];
+			_rtw_memcpy(ssid, ssid_ie + 2, ssid_ie[1]);
+		}
+	}
+	rcu_read_unlock();
+}
+
+/* WPA3-SAE: auth callback — called by cfg80211 when wpa_supplicant
+ * initiates SAE authentication. For SAE, we need to trigger external
+ * auth so wpa_supplicant handles the Dragonfly handshake.
+ * For non-SAE (open/WPA2), just return 0 to proceed normally.
+ */
+static int cfg80211_rtw_auth(struct wiphy *wiphy, struct net_device *ndev,
+			     struct cfg80211_auth_request *req)
+{
+	_adapter *padapter = (_adapter *)rtw_netdev_priv(ndev);
+	struct security_priv *psecuritypriv = &padapter->securitypriv;
+
+	DBG_871X(FUNC_NDEV_FMT" auth_type=%d\n",
+		 FUNC_NDEV_ARG(ndev), req->auth_type);
+
+	/* For SAE: trigger external auth */
+	if (req->auth_type == NL80211_AUTHTYPE_SAE) {
+		struct cfg80211_external_auth_params auth_params;
+		u8 ssid[33];
+		u8 ssid_len = 0;
+
+		_rtw_bss_get_ssid(req->bss, ssid, &ssid_len);
+
+		DBG_871X("WPA3-SAE: auth callback, triggering external auth for %s\n",
+			 ssid);
+
+		_rtw_memset(&auth_params, 0, sizeof(auth_params));
+		auth_params.action = NL80211_EXTERNAL_AUTH_START;
+		_rtw_memcpy(auth_params.bssid, req->bss->bssid, ETH_ALEN);
+		_rtw_memcpy(auth_params.ssid.ssid, ssid, ssid_len);
+		auth_params.ssid.ssid_len = ssid_len;
+		auth_params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
+
+		/* Store for the external_auth callback */
+		_rtw_memcpy(psecuritypriv->sae_ssid, ssid, ssid_len);
+		psecuritypriv->sae_ssid_len = ssid_len;
+		_rtw_memcpy(psecuritypriv->sae_bssid, req->bss->bssid,
+			    ETH_ALEN);
+
+		return cfg80211_external_auth_request(ndev, &auth_params,
+						      GFP_KERNEL);
+	}
+
+	return 0;
+}
+
+/* WPA3-SAE: assoc callback — called after SAE auth completes.
+ * Do normal association (open auth + connect).
+ */
+static int cfg80211_rtw_assoc(struct wiphy *wiphy, struct net_device *ndev,
+			      struct cfg80211_assoc_request *req)
+{
+	_adapter *padapter = (_adapter *)rtw_netdev_priv(ndev);
+	struct security_priv *psecuritypriv = &padapter->securitypriv;
+	NDIS_802_11_SSID ndis_ssid;
+
+	DBG_871X(FUNC_NDEV_FMT" assoc\n", FUNC_NDEV_ARG(ndev));
+
+	_rtw_memset(&ndis_ssid, 0, sizeof(ndis_ssid));
+	ndis_ssid.SsidLength = psecuritypriv->sae_ssid_len;
+	_rtw_memcpy(ndis_ssid.Ssid, psecuritypriv->sae_ssid,
+		    psecuritypriv->sae_ssid_len);
+
+	psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+
+	if (rtw_set_802_11_connect(padapter, (u8 *)req->bss->bssid,
+				   &ndis_ssid) == _FALSE) {
+		DBG_871X("WPA3-SAE: assoc connect failed\n");
+		return -ECONNREFUSED;
+	}
+
+	return 0;
+}
+
 static struct cfg80211_ops rtw_cfg80211_ops = {
 	.change_virtual_intf = cfg80211_rtw_change_iface,
 	.add_key = cfg80211_rtw_add_key,
@@ -6818,6 +7066,8 @@ static struct cfg80211_ops rtw_cfg80211_ops = {
 	.del_pmksa = cfg80211_rtw_del_pmksa,
 	.flush_pmksa = cfg80211_rtw_flush_pmksa,
 	.external_auth = cfg80211_rtw_external_auth,
+		//.auth = cfg80211_rtw_auth,
+		//.assoc = cfg80211_rtw_assoc,
 	
 #ifdef CONFIG_AP_MODE
 	.add_virtual_intf = cfg80211_rtw_add_virtual_intf,
@@ -6841,8 +7091,8 @@ static struct cfg80211_ops rtw_cfg80211_ops = {
 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0))
 	.set_channel = cfg80211_rtw_set_channel,
 	#endif
-	//.auth = cfg80211_rtw_auth,
-	//.assoc = cfg80211_rtw_assoc,	
+	//	//.auth = cfg80211_rtw_auth,
+	//	//.assoc = cfg80211_rtw_assoc,	
 #endif //CONFIG_AP_MODE
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
@@ -6976,8 +7226,12 @@ int rtw_wdev_alloc(_adapter *padapter, struct wiphy *wiphy)
 	pwdev_priv->provdisc_req_issued = _FALSE;
 	rtw_wdev_invit_info_init(&pwdev_priv->invit_info);
 	rtw_wdev_nego_info_init(&pwdev_priv->nego_info);
-		
+	
 	pwdev_priv->bandroid_scan = _FALSE;
+
+	/* Initialize deferred SAE external auth work */
+	INIT_WORK(&pwdev_priv->sae_ext_auth_work, rtw_sae_ext_auth_work);
+	pwdev_priv->sae_ndev = NULL;
 
 	if(padapter->registrypriv.power_mgnt != PS_MODE_ACTIVE)
 		pwdev_priv->power_mgmt = _TRUE;
