@@ -62,6 +62,9 @@
 #ifndef WLAN_AKM_SUITE_WAPI_CERT
 #define WLAN_AKM_SUITE_WAPI_CERT        0x000FAC12
 #endif
+#ifndef WLAN_AKM_SUITE_SAE
+#define WLAN_AKM_SUITE_SAE              0x000FAC08
+#endif
 
 #ifndef NL80211_WAPI_VERSION_1
 #define NL80211_WAPI_VERSION_1          (1 << 2)
@@ -854,6 +857,12 @@ check_bss:
 	#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0) || defined(COMPAT_KERNEL_RELEASE)	
 		DBG_8192C("pwdev->sme_state(b)=%d\n", pwdev->sme_state);
 	#endif
+		mdelay(20);
+		mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
 		cfg80211_connect_result(padapter->pnetdev, cur_network->network.MacAddress
 			, pmlmepriv->assoc_req+sizeof(struct rtw_ieee80211_hdr_3addr)+2
 			, pmlmepriv->assoc_req_len-sizeof(struct rtw_ieee80211_hdr_3addr)-2
@@ -918,6 +927,12 @@ void rtw_cfg80211_indicate_disconnect(_adapter *padapter, u16 reason, u8 locally
 		DBG_8192C("pwdev->sme_state(b)=%d\n", pwdev->sme_state);
 
 		if(pwdev->sme_state==CFG80211_SME_CONNECTING)
+		mdelay(20);
+		mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
 			cfg80211_connect_result(padapter->pnetdev, NULL, NULL, 0, NULL, 0, 
 				WLAN_STATUS_UNSPECIFIED_FAILURE, GFP_ATOMIC/*GFP_KERNEL*/);
 		else if (pwdev->sme_state == CFG80211_SME_CONNECTED) {
@@ -942,7 +957,17 @@ void rtw_cfg80211_indicate_disconnect(_adapter *padapter, u16 reason, u8 locally
 			cfg80211_disconnected(padapter->pnetdev, 0, NULL, 0, GFP_ATOMIC);
 #endif
 		} else {
+		mdelay(20);
+		mdelay(20);
+	mdelay(20);
+	mdelay(20);
 			DBG_871X(FUNC_ADPT_FMT" call cfg80211_connect_result\n", FUNC_ADPT_ARG(padapter));
+		mdelay(20);
+		mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
+	mdelay(20);
 			cfg80211_connect_result(padapter->pnetdev, NULL, NULL, 0, NULL, 0, 
 				WLAN_STATUS_UNSPECIFIED_FAILURE, GFP_ATOMIC);
 		}
@@ -1405,9 +1430,11 @@ _func_enter_;
 				{
 					if(strcmp(param->u.crypt.alg, "TKIP") == 0 || strcmp(param->u.crypt.alg, "CCMP") == 0)
 					{
-						_rtw_memcpy(padapter->securitypriv.dot118021XGrpKey[param->u.crypt.idx].skey,  param->u.crypt.key,(param->u.crypt.key_len>16 ?16:param->u.crypt.key_len));
-						_rtw_memcpy(padapter->securitypriv.dot118021XGrptxmickey[param->u.crypt.idx].skey,&(param->u.crypt.key[16]),8);
-						_rtw_memcpy(padapter->securitypriv.dot118021XGrprxmickey[param->u.crypt.idx].skey,&(param->u.crypt.key[24]),8);
+					_rtw_memcpy(padapter->securitypriv.dot118021XGrpKey[param->u.crypt.idx].skey, param->u.crypt.key, (param->u.crypt.key_len > 16 ? 16 : param->u.crypt.key_len));
+					if (param->u.crypt.key_len >= 24)
+						_rtw_memcpy(padapter->securitypriv.dot118021XGrptxmickey[param->u.crypt.idx].skey, &(param->u.crypt.key[16]), 8);
+					if (param->u.crypt.key_len >= 32)
+						_rtw_memcpy(padapter->securitypriv.dot118021XGrprxmickey[param->u.crypt.idx].skey, &(param->u.crypt.key[24]), 8);
 	                                        padapter->securitypriv.binstallGrpkey = _TRUE;	
 						//DEBUG_ERR((" param->u.crypt.key_len=%d\n", param->u.crypt.key_len));
 						DBG_871X(" ~~~~set sta key:groupkey\n");
@@ -2661,7 +2688,7 @@ exit:
 	
 }
 
-static int cfg80211_rtw_set_wiphy_params(struct wiphy *wiphy, u32 changed)
+static int cfg80211_rtw_set_wiphy_params(struct wiphy *wiphy, int index, u32 changed)
 {
 #if 0
 	struct iwm_priv *iwm = wiphy_to_iwm(wiphy);
@@ -2764,7 +2791,19 @@ static int rtw_cfg80211_set_auth_type(struct security_priv *psecuritypriv,
 
 
 		break;
-	default:		
+	case NL80211_AUTHTYPE_SAE:
+		/* WPA3-SAE: Dragonfly handshake happens via management frames
+		 * in userspace (wpa_supplicant). Driver uses open auth —
+		 * the SAE commit/confirm exchange is transparent to us.
+		 */
+		psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_Open;
+
+		if (psecuritypriv->ndisauthtype > Ndis802_11AuthModeWPA)
+			psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+
+		DBG_871X("SAE auth type detected, using open/8021X\n");
+		break;
+	default:
 		psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_Open;
 		//return -ENOTSUPP;
 	}
@@ -2847,6 +2886,14 @@ static int rtw_cfg80211_set_key_mgt(struct security_priv *psecuritypriv, u32 key
 		psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
 	else if (key_mgt == WLAN_AKM_SUITE_PSK) {
 		psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+	}
+	else if (key_mgt == WLAN_AKM_SUITE_SAE) {
+		/* WPA3-SAE: use same 802.1X auth algorithm, SAE handshake
+		 * happens in userspace (wpa_supplicant) via Dragonfly.
+		 * The driver just needs to pass auth frames through.
+		 */
+		psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+		psecuritypriv->wpa3_sae = 1;
 	}
 #ifdef CONFIG_WAPI_SUPPORT
 	else if(key_mgt ==WLAN_AKM_SUITE_WAPI_PSK){
@@ -3436,6 +3483,56 @@ static int cfg80211_rtw_connect(struct wiphy *wiphy, struct net_device *ndev,
 	authmode = psecuritypriv->ndisauthtype;
 	rtw_set_802_11_authentication_mode(padapter, authmode);
 
+	/* WPA3-SAE: if SAE key_mgmt was detected, hand off authentication
+	 * to wpa_supplicant via external_auth. The driver does NOT do the
+	 * SAE Dragonfly handshake — that's userspace's job.
+	 * We trigger cfg80211_external_auth_request() which tells
+	 * wpa_supplicant to do SAE commit/confirm via management frames.
+	 * After SAE completes, the external_auth callback will be called
+	 * and we proceed with normal open auth + assoc.
+	 */
+	if (psecuritypriv->wpa3_sae) {
+		struct cfg80211_external_auth_params auth_params;
+
+		DBG_871X("WPA3-SAE: triggering external auth for %s\n",
+			 ndis_ssid.Ssid);
+
+		_rtw_memset(&auth_params, 0, sizeof(auth_params));
+		auth_params.action = NL80211_EXTERNAL_AUTH_START;
+		if (sme->bssid)
+			_rtw_memcpy(auth_params.bssid, sme->bssid, ETH_ALEN);
+		else
+			_rtw_memset(auth_params.bssid, 0xff, ETH_ALEN);
+		_rtw_memcpy(auth_params.ssid.ssid, ndis_ssid.Ssid,
+			    ndis_ssid.SsidLength);
+		auth_params.ssid.ssid_len = ndis_ssid.SsidLength;
+		auth_params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
+
+		/* Store connection params so external_auth callback can
+		 * complete the connection after SAE succeeds
+		 */
+		_rtw_memcpy(psecuritypriv->sae_ssid, ndis_ssid.Ssid,
+			    ndis_ssid.SsidLength);
+		psecuritypriv->sae_ssid_len = ndis_ssid.SsidLength;
+		if (sme->bssid)
+			_rtw_memcpy(psecuritypriv->sae_bssid, sme->bssid,
+				    ETH_ALEN);
+		else
+			_rtw_memset(psecuritypriv->sae_bssid, 0xff, ETH_ALEN);
+
+		ret = cfg80211_external_auth_request(ndev, &auth_params,
+						     GFP_KERNEL);
+		if (ret) {
+			DBG_871X("WPA3-SAE: external_auth_request failed: %d\n",
+				 ret);
+			ret = -EOPNOTSUPP;
+		} else {
+			DBG_871X("WPA3-SAE: external_auth_request sent, waiting for wpa_supplicant\n");
+			ret = 0;
+		}
+		goto exit;
+	}
+
 	//rtw_set_802_11_encryption_mode(padapter, padapter->securitypriv.ndisencryptstatus);
 
 	if (rtw_set_802_11_connect(padapter, (u8 *)sme->bssid, &ndis_ssid) == _FALSE) {
@@ -3495,7 +3592,7 @@ static int cfg80211_rtw_disconnect(struct wiphy *wiphy, struct net_device *ndev,
 
 static int cfg80211_rtw_set_txpower(struct wiphy *wiphy,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0))
-	struct wireless_dev *wdev,
+	struct wireless_dev *wdev, int link_id,
 #endif
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)) || defined(COMPAT_KERNEL_RELEASE)
 	enum nl80211_tx_power_setting type, int mbm)
@@ -3535,7 +3632,7 @@ static int cfg80211_rtw_set_txpower(struct wiphy *wiphy,
 
 static int cfg80211_rtw_get_txpower(struct wiphy *wiphy,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0))
-	struct wireless_dev *wdev,
+	struct wireless_dev *wdev, int link_id, unsigned int requested_id,
 #endif
 	int *dbm)
 {
@@ -4649,7 +4746,7 @@ static int	cfg80211_rtw_set_channel(struct wiphy *wiphy
 	return 0;
 }
 
-static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy
+static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy, struct net_device *ndev
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
 											, struct cfg80211_chan_def *chandef
 #else
@@ -5755,7 +5852,7 @@ static void cfg80211_rtw_mgmt_frame_register(struct wiphy *wiphy,
 	_adapter *adapter;
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0))
-	u16 frame_type = BIT(upd->global_stypes << 4);
+	u16 frame_type = BIT((upd->global_stypes & 0xF) << 4);
 	bool reg = false;
 #endif
 
@@ -6650,6 +6747,54 @@ static void rtw_cfg80211_preinit_wiphy(_adapter *adapter, struct wiphy *wiphy)
 #endif
 }
 
+/* WPA3-SAE: external_auth callback
+ * cfg80211 calls this after wpa_supplicant completes the SAE handshake.
+ * If status == SUCCESS, proceed with normal open auth + assoc using
+ * the connection params we stored during the connect call.
+ * If status != SUCCESS, report failure via cfg80211_connect_result().
+ */
+static int cfg80211_rtw_external_auth(struct wiphy *wiphy,
+				      struct net_device *dev,
+				      struct cfg80211_external_auth_params *params)
+{
+	_adapter *padapter = (_adapter *)rtw_netdev_priv(dev);
+	struct security_priv *psecuritypriv = &padapter->securitypriv;
+	NDIS_802_11_SSID ndis_ssid;
+
+	DBG_871X(FUNC_NDEV_FMT" action=%d status=%d\n",
+		 FUNC_NDEV_ARG(dev), params->action, params->status);
+
+	if (params->status != WLAN_STATUS_SUCCESS) {
+		DBG_871X("WPA3-SAE: external auth FAILED (status=%d)\n",
+			 params->status);
+		cfg80211_connect_result(dev, NULL, NULL, 0, NULL, 0,
+				       WLAN_STATUS_UNSPECIFIED_FAILURE,
+				       GFP_KERNEL);
+		return 0;
+	}
+
+	/* SAE succeeded! Now do normal open auth + assoc */
+	DBG_871X("WPA3-SAE: external auth SUCCESS, connecting to %s\n",
+		 psecuritypriv->sae_ssid);
+
+	_rtw_memset(&ndis_ssid, 0, sizeof(ndis_ssid));
+	ndis_ssid.SsidLength = psecuritypriv->sae_ssid_len;
+	_rtw_memcpy(ndis_ssid.Ssid, psecuritypriv->sae_ssid,
+		    psecuritypriv->sae_ssid_len);
+
+	psecuritypriv->dot11AuthAlgrthm = dot11AuthAlgrthm_8021X;
+
+	if (rtw_set_802_11_connect(padapter, psecuritypriv->sae_bssid,
+				   &ndis_ssid) == _FALSE) {
+		DBG_871X("WPA3-SAE: connect failed after SAE\n");
+		cfg80211_connect_result(dev, NULL, NULL, 0, NULL, 0,
+				       WLAN_STATUS_UNSPECIFIED_FAILURE,
+				       GFP_KERNEL);
+	}
+
+	return 0;
+}
+
 static struct cfg80211_ops rtw_cfg80211_ops = {
 	.change_virtual_intf = cfg80211_rtw_change_iface,
 	.add_key = cfg80211_rtw_add_key,
@@ -6672,6 +6817,7 @@ static struct cfg80211_ops rtw_cfg80211_ops = {
 	.set_pmksa = cfg80211_rtw_set_pmksa,
 	.del_pmksa = cfg80211_rtw_del_pmksa,
 	.flush_pmksa = cfg80211_rtw_flush_pmksa,
+	.external_auth = cfg80211_rtw_external_auth,
 	
 #ifdef CONFIG_AP_MODE
 	.add_virtual_intf = cfg80211_rtw_add_virtual_intf,
@@ -6753,6 +6899,8 @@ struct wiphy *rtw_wiphy_alloc(_adapter *padapter, struct device *dev)
 	DBG_871X(FUNC_WIPHY_FMT"\n", FUNC_WIPHY_ARG(wiphy));
 
 exit:
+	wiphy->features |= NL80211_FEATURE_SAE;
+	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_MFP_OPTIONAL);
 	return wiphy;
 }
 

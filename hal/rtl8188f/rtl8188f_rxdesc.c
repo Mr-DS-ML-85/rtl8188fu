@@ -41,7 +41,17 @@ void rtl8188f_query_rx_desc_status(union recv_frame *precvframe, u8 *pdesc)
 		pattrib->qos = (u8)GET_RX_STATUS_DESC_QOS_8188F(pdesc);
 		pattrib->shift_sz = (u8)GET_RX_STATUS_DESC_SHIFT_8188F(pdesc);
 		pattrib->physt = (u8)GET_RX_STATUS_DESC_PHY_STATUS_8188F(pdesc);
-		pattrib->bdecrypted = (u8)GET_RX_STATUS_DESC_SWDEC_8188F(pdesc) ? 0 : 1;
+		/* WPA3/802.11w fix: only report decrypted when HW actually
+		 * had encryption to decrypt. If encrypt==NONE (0), the frame
+		 * was unencrypted — bdecrypted must be 0 so mac80211 doesn't
+		 * skip software decryption of encrypted management frames.
+		 */
+		if ((u8)GET_RX_STATUS_DESC_SWDEC_8188F(pdesc))
+			pattrib->bdecrypted = 0;  /* HW says: need SW decryption */
+		else if (pattrib->encrypt != 0)
+			pattrib->bdecrypted = 1;  /* HW decrypted it */
+		else
+			pattrib->bdecrypted = 0;  /* No encryption present */
 
 		/* Offset 4 */
 		pattrib->priority = (u8)GET_RX_STATUS_DESC_TID_8188F(pdesc);

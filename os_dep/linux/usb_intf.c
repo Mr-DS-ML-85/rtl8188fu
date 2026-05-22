@@ -131,9 +131,7 @@ static void rtw_dev_shutdown(struct device *dev)
 static struct usb_device_id rtw_usb_id_tbl[] ={
 #ifdef CONFIG_RTL8188F
 	/*=== Realtek demoboard ===*/
-	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xF179, 0xff,nano /usr/src/rtl8188fu-1.0/os_dep/linux/usb_intf.c
-Find the table entry like: 0xff, 0xff), .driver_info = RTL8188F}, /* 8188FU 1*1 */
-#endif
+	{USB_DEVICE_AND_INTERFACE_INFO(USB_VENDER_ID_REALTEK, 0xF179, 0xff, 0xff, 0xff), .driver_info = RTL8188F}, /* 8188FU 1*1 */
 
 	{}	/* Terminating entry */
 };
@@ -1597,3 +1595,4 @@ _adapter  *rtw_usb_get_sw_pointer(void)
 EXPORT_SYMBOL(rtw_usb_get_sw_pointer);
 #endif	//CONFIG_INTEL_PROXIM
 
+#endif

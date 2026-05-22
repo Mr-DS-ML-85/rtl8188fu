@@ -1931,6 +1931,7 @@ u32 mp_query_psd(PADAPTER pAdapter, u8 *data)
 	data[0]='\0';
 
 	i = psd_start;
+	u32 offset = 0;
 	while (i < psd_stop)
 	{
 		if (i >= psd_pts) {
@@ -1938,7 +1939,7 @@ u32 mp_query_psd(PADAPTER pAdapter, u8 *data)
 		} else {
 			psd_data = rtw_GetPSDData(pAdapter, i);
 		}
-		sprintf(data, "%s%x ", data, psd_data);
+		offset += sprintf(data + offset, "%x ", psd_data);
 		i++;
 	}
 

@@ -166,6 +166,12 @@ struct security_priv
 #ifdef CONFIG_IEEE80211W
 	u8	binstallBIPkey;
 #endif //CONFIG_IEEE80211W
+	/* WPA3-SAE: flag set when AKM suite is SAE */
+	u8	wpa3_sae;
+	/* WPA3-SAE: stored connection params for external_auth callback */
+	u8	sae_ssid[33];
+	u8	sae_ssid_len;
+	u8	sae_bssid[6];
 	u8	busetkipkey;
 	//_timer tkip_timer;
 	u8	bcheck_grpkey;

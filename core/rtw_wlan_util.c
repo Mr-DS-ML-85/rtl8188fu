@@ -1962,7 +1962,7 @@ void HT_caps_handler(_adapter *padapter, PNDIS_802_11_VARIABLE_IEs pIE)
 
 	pmlmeinfo->HT_caps_enable = 1;
 	
-	for (i = 0; i < (pIE->Length); i++)
+	for (i = 0; i < (pIE->Length) && i < sizeof(pmlmeinfo->HT_caps.u.HT_cap); i++)
 	{
 		if (i != 2)
 		{
@@ -2009,7 +2009,7 @@ void HT_caps_handler(_adapter *padapter, PNDIS_802_11_VARIABLE_IEs pIE)
 
 	//update the MCS set
 	for (i = 0; i < 16; i++)
-		pmlmeinfo->HT_caps.u.HT_cap_element.MCS_rate[i] &= pmlmeext->default_supported_mcs_set[i];
+		pmlmeinfo->HT_caps.u.HT_cap_element.MCS_rate[i] &= pmlmeext->default_supported_mcs_set[i % 16];
 			
 	//update the MCS rates
 	switch(rf_type)

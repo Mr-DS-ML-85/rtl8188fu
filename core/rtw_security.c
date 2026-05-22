@@ -2281,7 +2281,7 @@ BIP_exit:
 
 #ifndef PLATFORM_FREEBSD
 /* compress 512-bits */
-static int sha256_compress(struct rtw_sha256_state *md, unsigned char *buf)
+static int rtw_sha256_compress(struct rtw_sha256_state *md, unsigned char *buf)
 {
 	u32 S[8], W[64], t0, t1;
 	u32 t;
@@ -2323,7 +2323,7 @@ static int sha256_compress(struct rtw_sha256_state *md, unsigned char *buf)
 }
 
 /* Initialize the hash state */
-static void sha256_init(struct rtw_sha256_state *md)
+static void rtw_sha256_init(struct rtw_sha256_state *md)
 {
 	md->curlen = 0;
 	md->length = 0;
@@ -2344,7 +2344,7 @@ static void sha256_init(struct rtw_sha256_state *md)
    @param inlen  The length of the data (octets)
    @return CRYPT_OK if successful
 */
-static int sha256_process(struct rtw_sha256_state *md, unsigned char *in,
+static int rtw_sha256_process(struct rtw_sha256_state *md, unsigned char *in,
 			  unsigned long inlen)
 {
 	unsigned long n;
@@ -2355,7 +2355,7 @@ static int sha256_process(struct rtw_sha256_state *md, unsigned char *in,
 
 	while (inlen > 0) {
 		if (md->curlen == 0 && inlen >= block_size) {
-			if (sha256_compress(md, (unsigned char *) in) < 0)
+			if (rtw_sha256_compress(md, (unsigned char *) in) < 0)
 				return -1;
 			md->length += block_size * 8;
 			in += block_size;
@@ -2367,7 +2367,7 @@ static int sha256_process(struct rtw_sha256_state *md, unsigned char *in,
 			in += n;
 			inlen -= n;
 			if (md->curlen == block_size) {
-				if (sha256_compress(md, md->buf) < 0)
+				if (rtw_sha256_compress(md, md->buf) < 0)
 					return -1;
 				md->length += 8 * block_size;
 				md->curlen = 0;
@@ -2385,7 +2385,7 @@ static int sha256_process(struct rtw_sha256_state *md, unsigned char *in,
    @param out [out] The destination of the hash (32 bytes)
    @return CRYPT_OK if successful
 */
-static int sha256_done(struct rtw_sha256_state *md, unsigned char *out)
+static int rtw_sha256_done(struct rtw_sha256_state *md, unsigned char *out)
 {
 	int i;
 
@@ -2406,7 +2406,7 @@ static int sha256_done(struct rtw_sha256_state *md, unsigned char *out)
 		while (md->curlen < 64) {
 			md->buf[md->curlen++] = (unsigned char) 0;
 		}
-		sha256_compress(md, md->buf);
+		rtw_sha256_compress(md, md->buf);
 		md->curlen = 0;
 	}
 
@@ -2417,7 +2417,7 @@ static int sha256_done(struct rtw_sha256_state *md, unsigned char *out)
 
 	/* store length */
 	WPA_PUT_BE64(md->buf + 56, md->length);
-	sha256_compress(md, md->buf);
+	rtw_sha256_compress(md, md->buf);
 
 	/* copy output */
 	for (i = 0; i < 8; i++)
@@ -2440,11 +2440,11 @@ static int sha256_vector(size_t num_elem, u8 *addr[], size_t *len,
 	struct rtw_sha256_state ctx;
 	size_t i;
 
-	sha256_init(&ctx);
+	rtw_sha256_init(&ctx);
 	for (i = 0; i < num_elem; i++)
-		if (sha256_process(&ctx, addr[i], len[i]))
+		if (rtw_sha256_process(&ctx, addr[i], len[i]))
 			return -1;
-	if (sha256_done(&ctx, mac))
+	if (rtw_sha256_done(&ctx, mac))
 		return -1;
 	return 0;
 }
