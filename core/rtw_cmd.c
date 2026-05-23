@@ -896,6 +896,11 @@ u8 rtw_sitesurvey_cmd(_adapter  *padapter, NDIS_802_11_SSID *ssid, int ssid_num,
 
 _func_enter_;
 
+	/* Block ALL scans in monitor mode — channel is user-controlled */
+	if (MLME_IS_MONITOR(padapter)) {
+		return _SUCCESS;
+	}
+
 #ifdef CONFIG_LPS
 	if(check_fwstate(pmlmepriv, _FW_LINKED) == _TRUE){
 		rtw_lps_ctrl_wk_cmd(padapter, LPS_CTRL_SCAN, 1);

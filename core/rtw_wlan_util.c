@@ -819,6 +819,13 @@ void set_channel_bwmode(_adapter *padapter, unsigned char channel, unsigned char
 	u8 iqk_info_backup = _FALSE;
 #endif
 
+	/* Enforce channel lock in monitor mode — block scan overrides */
+	if (padapter->monitor_ch_lock && padapter->monitor_ch_lock != channel) {
+		printk(KERN_INFO "RTL8188FU: BLOCKED ch%d (locked to ch%d)\n",
+			channel, padapter->monitor_ch_lock);
+		return;
+	}
+
 	if ( padapter->bNotifyChannelChange )
 	{
 		DBG_871X( "[%s] ch = %d, offset = %d, bwmode = %d\n", __FUNCTION__, channel, channel_offset, bwmode );

@@ -30,6 +30,8 @@ extern unsigned char	WPS_OUI[];
 extern unsigned char	P2P_OUI[];
 extern unsigned char	WFD_OUI[];
 
+static void sw_beacon_timer_hdl(void *ctx);
+
 void init_mlme_ap_info(_adapter *padapter)
 {
 	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
@@ -46,6 +48,35 @@ void init_mlme_ap_info(_adapter *padapter)
 	//pmlmeext->bstart_bss = _FALSE;
 
 	start_ap_mode(padapter);
+
+	/* Initialize software beacon timer */
+	rtw_init_timer(&pmlmepriv->sw_beacon_timer, padapter, sw_beacon_timer_hdl);
+}
+
+/* Software beacon timer callback - periodically sends beacons in AP mode */
+static void sw_beacon_timer_hdl(void *ctx)
+{
+	_adapter *padapter = (_adapter *)ctx;
+	struct mlme_ext_priv *pmlmeext = &padapter->mlmeextpriv;
+	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
+	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
+
+	if (!padapter)
+		return;
+
+	if ((pmlmeinfo->state & 0x03) != WIFI_FW_AP_STATE)
+		return;
+
+	if (_FALSE == pmlmeext->bstart_bss)
+		return;
+
+	printk(KERN_INFO "RTL8188FU: sw_beacon_timer_hdl fired!\n");
+		/* Force beacon update and send */
+	pmlmepriv->update_bcn = _TRUE;
+	set_tx_beacon_cmd(padapter);
+
+	/* Re-arm timer: beacon interval is typically 100 TU = 102.4 ms */
+	_set_timer(&pmlmepriv->sw_beacon_timer, 100);
 }
 
 void free_mlme_ap_info(_adapter *padapter)
@@ -58,6 +89,9 @@ void free_mlme_ap_info(_adapter *padapter)
 	struct mlme_ext_info	*pmlmeinfo = &(pmlmeext->mlmext_info);
 
 	//stop_ap_mode(padapter);
+
+	/* Stop software beacon timer */
+	_cancel_timer_ex(&pmlmepriv->sw_beacon_timer);
 
 	pmlmepriv->update_bcn = _FALSE;
 	pmlmeext->bstart_bss = _FALSE;	
@@ -1499,10 +1533,8 @@ void start_bss_network(_adapter *padapter, struct createbss_parm *parm)
 	//check if there is wps ie, 
 	//if there is wpsie in beacon, the hostapd will update beacon twice when stating hostapd,
 	//and at first time the security ie ( RSN/WPA IE) will not include in beacon.
-	if(NULL == rtw_get_wps_ie(pnetwork->IEs+_FIXED_IE_LENGTH_, pnetwork->IELength-_FIXED_IE_LENGTH_, NULL, NULL))
-	{
-		pmlmeext->bstart_bss = _TRUE;
-	}
+	//FIX: Always set bstart_bss = TRUE so beacons get sent even with WPS IE
+	pmlmeext->bstart_bss = _TRUE;
 
 	//todo: update wmm, ht cap
 	//pmlmeinfo->WMM_enable;
@@ -1642,6 +1674,10 @@ change_chbw:
 			DBG_871X("issue_beacon, fail!\n");
 		#endif 
 		#endif /* !defined(CONFIG_INTERRUPT_BASED_TXBCN) */
+
+		/* Start software beacon timer to periodically re-send beacons */
+		printk(KERN_INFO "RTL8188FU: Starting sw_beacon_timer from start_bss_network\n");
+		_set_timer(&pmlmepriv->sw_beacon_timer, 100);
 	}
 
 	/*Set EDCA param reg after update cur_wireless_mode & update_capinfo*/
@@ -2977,6 +3013,10 @@ void _update_beacon(_adapter *padapter, u8 ie_id, u8 *oui, u8 tx, const char *ta
 		if (0)
 			DBG_871X(FUNC_ADPT_FMT" ie_id:%u - %s\n", FUNC_ADPT_ARG(padapter), ie_id, tag);
 		set_tx_beacon_cmd(padapter);
+
+		/* Start software beacon timer for periodic beacon TX */
+		printk(KERN_INFO "RTL8188FU: Starting sw_beacon_timer from _update_beacon\n");
+		_set_timer(&pmlmepriv->sw_beacon_timer, 100);
 	}
 #else
 	{	

@@ -2973,6 +2973,11 @@ void rtw_drv_scan_by_self(_adapter *padapter)
 {
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
 
+	/* Skip auto-scan in monitor mode - channel is user-controlled */
+	if (MLME_IS_MONITOR(padapter)) {
+		return;
+	}
+
 	if (!padapter->registrypriv.wifi_spec) {
 		if (check_fwstate(pmlmepriv, (_FW_UNDER_SURVEY | _FW_UNDER_LINKING)) == _TRUE) {
 			DBG_871X(FUNC_ADPT_FMT" _FW_UNDER_SURVEY|_FW_UNDER_LINKING\n", FUNC_ADPT_ARG(padapter));
@@ -3006,6 +3011,10 @@ exit:
 static void rtw_auto_scan_handler(_adapter *padapter)
 {
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
+
+	/* Never auto-scan in monitor mode */
+	if (MLME_IS_MONITOR(padapter))
+		return;
 
 	rtw_mlme_reset_auto_scan_int(padapter);
 

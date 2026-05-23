@@ -605,6 +605,7 @@ struct mlme_priv {
 
 	RT_LINK_DETECT_T	LinkDetectInfo;
 	_timer	dynamic_chk_timer; //dynamic/periodic check timer
+	_timer	sw_beacon_timer; // software beacon timer for AP mode
 
 	u8	acm_mask; // for wmm acm mask
 	const struct country_chplan *country_ent;

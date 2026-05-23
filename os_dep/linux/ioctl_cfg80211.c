@@ -2040,6 +2040,24 @@ static int cfg80211_rtw_change_iface(struct wiphy *wiphy,
 
 	/* initial default type */
 	ndev->type = ARPHRD_ETHER;
+	/*
+	 * Disable Power Save in monitor mode,
+	 * and enable it after leaving monitor mode.
+	 */
+	if (type == NL80211_IFTYPE_MONITOR) {
+		rtw_ps_deny(padapter, PS_DENY_MONITOR_MODE);
+		LeaveAllPowerSaveMode(padapter);
+		/* Enable carrier for monitor mode TX injection */
+		netif_carrier_on(ndev);
+		netif_start_queue(ndev);
+	} else if (old_type == NL80211_IFTYPE_MONITOR) {
+		/* driver in monitor mode last time */
+		rtw_ps_deny_cancel(padapter, PS_DENY_MONITOR_MODE);
+		padapter->monitor_ch_lock = 0;
+		/* Disable carrier when leaving monitor mode */
+		netif_carrier_off(ndev);
+	}
+
 
 	switch (type) {
 	case NL80211_IFTYPE_ADHOC:
@@ -4052,7 +4070,7 @@ static int rtw_cfg80211_monitor_if_close(struct net_device *ndev)
 }
 
 static int rtw_cfg80211_monitor_if_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
-{	
+{
 	int ret = 0;
 	int rtap_len;
 	int qos_len = 0;
@@ -4060,13 +4078,13 @@ static int rtw_cfg80211_monitor_if_xmit_entry(struct sk_buff *skb, struct net_de
 	int snap_len = 6;
 	unsigned char *pdata;
 	u16 frame_ctl;
-	unsigned char src_mac_addr[6];
-	unsigned char dst_mac_addr[6];
+	unsigned char src_mac_addr[ETH_ALEN];
+	unsigned char dst_mac_addr[ETH_ALEN];
 	struct rtw_ieee80211_hdr *dot11_hdr;
 	struct ieee80211_radiotap_header *rtap_hdr;
 	_adapter *padapter = (_adapter *)rtw_netdev_priv(ndev);
-	
-	DBG_871X(FUNC_NDEV_FMT"\n", FUNC_NDEV_ARG(ndev));
+	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
+	struct xmit_priv *pxmitpriv = &(padapter->xmitpriv);
 
 	if (skb)
 		rtw_mstat_update(MSTAT_TYPE_SKB, MSTAT_ALLOC_SUCCESS, skb->truesize);
@@ -4082,22 +4100,15 @@ static int rtw_cfg80211_monitor_if_xmit_entry(struct sk_buff *skb, struct net_de
 	if (unlikely(skb->len < rtap_len))
 		goto fail;
 
-	if(rtap_len != 14)
-	{
-		DBG_8192C("radiotap len (should be 14): %d\n", rtap_len);
-		goto fail;
-	}	
-
-	/* Skip the ratio tap header */
+	/* Skip the radiotap header */
 	skb_pull(skb, rtap_len);
 
 	dot11_hdr = (struct rtw_ieee80211_hdr *)skb->data;
 	frame_ctl = le16_to_cpu(dot11_hdr->frame_ctl);
-	/* Check if the QoS bit is set */
+
+	/* Handle ALL frame types for pentesting */
 	if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
-		/* Check if this ia a Wireless Distribution System (WDS) frame
-		 * which has 4 MAC addresses
-		 */
+		/* Data frames (including EAPOL) */
 		if (dot11_hdr->frame_ctl & 0x0080)
 			qos_len = 2;
 		if ((dot11_hdr->frame_ctl & 0x0300) == 0x0300)
@@ -4106,65 +4117,28 @@ static int rtw_cfg80211_monitor_if_xmit_entry(struct sk_buff *skb, struct net_de
 		memcpy(dst_mac_addr, dot11_hdr->addr1, sizeof(dst_mac_addr));
 		memcpy(src_mac_addr, dot11_hdr->addr2, sizeof(src_mac_addr));
 
-		/* Skip the 802.11 header, QoS (if any) and SNAP, but leave spaces for
-		 * for two MAC addresses
-		 */
 		skb_pull(skb, dot11_hdr_len + qos_len + snap_len - sizeof(src_mac_addr) * 2);
-		pdata = (unsigned char*)skb->data;
+		pdata = (unsigned char *)skb->data;
 		memcpy(pdata, dst_mac_addr, sizeof(dst_mac_addr));
 		memcpy(pdata + sizeof(dst_mac_addr), src_mac_addr, sizeof(src_mac_addr));
 
-		DBG_8192C("should be eapol packet\n");
-
-		/* Use the real net device to transmit the packet */
 		ret = _rtw_xmit_entry(skb, padapter->pnetdev);
-
 		return ret;
 
-	}
-	else if ((frame_ctl & (RTW_IEEE80211_FCTL_FTYPE|RTW_IEEE80211_FCTL_STYPE))
-		== (RTW_IEEE80211_FTYPE_MGMT|RTW_IEEE80211_STYPE_ACTION)
-	) 
-	{
-		//only for action frames
-		struct xmit_frame		*pmgntframe;
-		struct pkt_attrib	*pattrib;
-		unsigned char	*pframe;	
-		//u8 category, action, OUI_Subtype, dialogToken=0;
-		//unsigned char	*frame_body;
-		struct rtw_ieee80211_hdr *pwlanhdr;	
-		struct xmit_priv	*pxmitpriv = &(padapter->xmitpriv);
-		struct mlme_ext_priv	*pmlmeext = &(padapter->mlmeextpriv);
+	} else if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_MGMT) {
+		/* ALL management frames: auth, deauth, assoc, beacon, probe, etc. */
+		struct xmit_frame *pmgntframe;
+		struct pkt_attrib *pattrib;
+		unsigned char *pframe;
+		struct rtw_ieee80211_hdr *pwlanhdr;
 		u8 *buf = skb->data;
 		u32 len = skb->len;
-		u8 category, action;
-		int type = -1;
 
-		if (rtw_action_frame_parse(buf, len, &category, &action) == _FALSE) {
-			DBG_8192C(FUNC_NDEV_FMT" frame_control:0x%x\n", FUNC_NDEV_ARG(ndev),
-				le16_to_cpu(((struct rtw_ieee80211_hdr_3addr *)buf)->frame_ctl));
+		/* Allocate management frame */
+		pmgntframe = alloc_mgtxmitframe(pxmitpriv);
+		if (pmgntframe == NULL)
 			goto fail;
-		}
-		
-		DBG_8192C("RTW_Tx:da="MAC_FMT" via "FUNC_NDEV_FMT"\n",
-			MAC_ARG(GetAddr1Ptr(buf)), FUNC_NDEV_ARG(ndev));
-		#ifdef CONFIG_P2P
-		if((type = rtw_p2p_check_frames(padapter, buf, len, _TRUE)) >= 0)
-			goto dump;
-		#endif
-		if (category == RTW_WLAN_CATEGORY_PUBLIC)
-			DBG_871X("RTW_Tx:%s\n", action_public_str(action));
-		else
-			DBG_871X("RTW_Tx:category(%u), action(%u)\n", category, action);
 
-dump:
-		//starting alloc mgmt frame to dump it
-		if ((pmgntframe = alloc_mgtxmitframe(pxmitpriv)) == NULL)
-		{			
-			goto fail;
-		}
-
-		//update attribute
 		pattrib = &pmgntframe->attrib;
 		update_mgntframe_attrib(padapter, pattrib);
 		pattrib->retry_ctrl = _FALSE;
@@ -4173,40 +4147,35 @@ dump:
 
 		pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
 
-		_rtw_memcpy(pframe, (void*)buf, len);
+		_rtw_memcpy(pframe, (void *)buf, len);
 		pattrib->pktlen = len;
 
-#ifdef CONFIG_P2P
-		if (type >= 0)
-			rtw_xframe_chk_wfd_ie(pmgntframe);
-#endif /* CONFIG_P2P */
-	
 		pwlanhdr = (struct rtw_ieee80211_hdr *)pframe;
-		//update seq number
+		/* Update sequence number */
 		pmlmeext->mgnt_seq = GetSequence(pwlanhdr);
 		pattrib->seqnum = pmlmeext->mgnt_seq;
 		pmlmeext->mgnt_seq++;
 
-	
 		pattrib->last_txcmdsz = pattrib->pktlen;
-	
+
 		dump_mgntframe(padapter, pmgntframe);
-		
-	}
-	else
-	{
-		DBG_8192C("frame_ctl=0x%x\n", frame_ctl & (RTW_IEEE80211_FCTL_FTYPE|RTW_IEEE80211_FCTL_STYPE));
+
+	} else if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_CTL) {
+		/* Control frames (RTS, CTS, ACK, etc.) - usually not injected */
+		RTW_INFO("Control frame injection not supported: fc=0x%04x\n", frame_ctl);
+		goto fail;
+	} else {
+		RTW_INFO("Unknown frame type: fc=0x%04x\n", frame_ctl);
+		goto fail;
 	}
 
-	
-fail:
-	
 	rtw_skb_free(skb);
-
 	return 0;
-	
-}
 
+fail:
+	rtw_skb_free(skb);
+	return 0;
+}
 static void rtw_cfg80211_monitor_if_set_multicast_list(struct net_device *ndev)
 {
 	DBG_8192C("%s\n", __func__);
@@ -4917,6 +4886,7 @@ static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy, struct net_devi
 	int target_offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
 	int target_width = CHANNEL_WIDTH_20;
 
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
 #ifdef CONFIG_DEBUG_CFG80211
 	DBG_8192C("center_freq %u Mhz ch %u width %u freq1 %u freq2 %u\n"
@@ -4991,6 +4961,19 @@ static int cfg80211_rtw_set_monitor_channel(struct wiphy *wiphy, struct net_devi
 #endif
 
 	set_channel_bwmode(padapter, target_channal, target_offset, target_width);
+
+	/* Lock channel in monitor mode to prevent scan overrides */
+	padapter->monitor_ch_lock = target_channal;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+	/* Update chandef so cfg80211/iw report correct channel */
+	{
+		struct cfg80211_chan_def *cur_chandef = wdev_chandef(ndev->ieee80211_ptr, 0);
+		if (cur_chandef) {
+			*cur_chandef = *chandef;
+		}
+	}
+#endif
 
 	return 0;
 }

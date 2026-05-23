@@ -735,6 +735,12 @@ _func_enter_;
 		res=_FALSE;
 		goto exit;
 	}
+
+	/* Block ALL scans in monitor mode — channel is user-controlled */
+	if (MLME_IS_MONITOR(padapter)) {
+		return _TRUE;
+	}
+
 	if (!rtw_is_hw_init_completed(padapter)) {
 		res = _FALSE;
 		RT_TRACE(_module_rtl871x_ioctl_set_c_,_drv_err_,("\n===rtw_set_802_11_bssid_list_scan:hw_init_completed==_FALSE===\n"));

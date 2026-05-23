@@ -1105,6 +1105,7 @@ struct _ADAPTER{
 	//	Added by Albert 2012/10/26
 	//	The driver will show up the desired channel number when this flag is 1.
 	u8 bNotifyChannelChange;
+	u8 monitor_ch_lock; /* locked channel in monitor mode, 0 = unlocked */
 #ifdef CONFIG_P2P
 	//	Added by Albert 2012/12/06
 	//	The driver will show the current P2P status when the upper application reads it.

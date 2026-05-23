@@ -179,3 +179,222 @@ PRs welcome for other kernel/distro confirmations.
 ## License
 
 GPL v2 — see original driver source for full license terms.
+
+---
+
+## Pentesting Features
+
+This driver now includes **monitor mode** and **frame injection** support for WiFi security testing and research.
+
+### Monitor Mode Support
+
+- ✅ **Monitor mode** with radiotap headers
+- ✅ **Frame injection** for all 802.11 frame types
+- ✅ **aircrack-ng compatibility** (airmon-ng, aireplay-ng)
+- ✅ **Power save handling** (auto-disable in monitor mode)
+- ✅ **Channel control** in monitor mode
+- ✅ **Soft AP mode** for creating access points
+
+### Quick Start
+
+#### Enable Monitor Mode
+```bash
+# Method 1: Using airmon-ng (recommended)
+sudo -S -p '' airmon-ng check kill
+sudo -S -p '' airmon-ng start wlan0
+
+# Method 2: Manual setup
+sudo -S -p '' ip link set wlan0 down
+sudo -S -p '' iw dev wlan0 set type monitor
+sudo -S -p '' ip link set wlan0 up
+```
+
+#### Test Injection
+```bash
+# Test frame injection
+sudo -S -p '' aireplay-ng -9 wlan0mon
+
+# Capture packets
+sudo -S -p '' airodump-ng wlan0mon
+
+# Capture specific network
+sudo -S -p '' airodump-ng -c 6 --bssid AA:BB:CC:DD:EE:FF -w capture wlan0mon
+```
+
+### Pentesting Scripts
+
+The `scripts/` directory contains ready-to-use tools:
+
+#### 1. airmon-ng.sh - Monitor Mode Control
+```bash
+# Enable monitor mode
+sudo -S -p '' ./scripts/airmon-ng.sh start wlan0
+
+# Disable monitor mode
+sudo -S -p '' ./scripts/airmon-ng.sh stop wlan0mon
+
+# Check for interfering processes
+sudo -S -p '' ./scripts/airmon-ng.sh check
+```
+
+#### 2. wifi-scanner.sh - Passive WiFi Scanner
+```bash
+# Scan all channels
+sudo -S -p '' ./scripts/wifi-scanner.sh wlan0mon
+
+# Scan specific channel
+sudo -S -p '' ./scripts/wifi-scanner.sh wlan0mon 6
+```
+
+#### 3. deauth-detector.sh - Deauth Attack Detection
+```bash
+# Monitor for deauth attacks
+sudo -S -p '' ./scripts/deauth-detector.sh wlan0mon
+
+# Monitor specific network
+sudo -S -p '' ./scripts/deauth-detector.sh wlan0mon AA:BB:CC:DD:EE:FF
+```
+
+#### 4. softap-setup.sh - Create Access Point
+```bash
+# Create a WiFi access point
+sudo -S -p '' ./scripts/softap-setup.sh wlan0 MyNetwork MyPassword123 6
+```
+
+#### 5. evil-twin.sh - Evil Twin Attack AP
+```bash
+# Create open evil twin (no password - for credential capture)
+sudo ./scripts/evil-twin.sh wlan0 "FreeWiFi" 6
+
+# Create WPA2 evil twin (same password as target)
+sudo ./scripts/evil-twin.sh wlan0 "TargetNetwork" 1 "RealPassword123"
+
+# Typical workflow:
+# 1. Scan for target: airodump-ng wlan0mon
+# 2. Start evil twin: sudo ./scripts/evil-twin.sh wlan0 "TargetSSID" <channel>
+# 3. Deauth real AP: sudo ./scripts/deauth-flood.sh wlan0mon <target_bssid>
+# 4. Clients connect to your AP instead
+```
+
+#### 6. deauth-flood.sh - Deauthentication Attack
+```bash
+# Deauth all clients from a network
+sudo ./scripts/deauth-flood.sh wlan0mon AA:BB:CC:DD:EE:FF
+
+# Deauth specific client
+sudo ./scripts/deauth-flood.sh wlan0mon AA:BB:CC:DD:EE:FF 11:22:33:44:55:66
+
+# Deauth with custom count
+sudo ./scripts/deauth-flood.sh wlan0mon AA:BB:CC:DD:EE:FF FF:FF:FF:FF:FF:FF 500
+```
+
+### Supported Tools
+
+This driver is compatible with:
+
+- ✅ **aircrack-ng** - WiFi security auditing
+- ✅ **airodump-ng** - Packet capture
+- ✅ **aireplay-ng** - Frame injection
+- ✅ **airbase-ng** - Fake AP
+- ✅ **kismet** - Wireless detector
+- ✅ **wireshark** - Packet analysis (with monitor mode)
+- ✅ **hostapd** - Access point
+- ✅ **evil-twin.sh** - Rogue AP for security testing
+- ✅ **deauth-flood.sh** - Client deauthentication
+
+### WiFi Security Testing Workflow
+
+1. **Scan for networks**
+   ```bash
+   sudo -S -p '' airmon-ng start wlan0
+   sudo -S -p '' airodump-ng wlan0mon
+   ```
+
+2. **Target a specific network**
+   ```bash
+   sudo -S -p '' airodump-ng -c 6 --bssid AA:BB:CC:DD:EE:FF -w capture wlan0mon
+   ```
+
+3. **Test for vulnerabilities**
+   ```bash
+   # Test injection capability
+   sudo -S -p '' aireplay-ng -9 wlan0mon
+   
+   # Deauth test (your own network only!)
+   sudo -S -p '' aireplay-ng -0 10 -a AA:BB:CC:DD:EE:FF wlan0mon
+   ```
+
+4. **Analyze captured data**
+   ```bash
+   # Crack handshake (your own network only!)
+   sudo -S -p '' aircrack-ng -w wordlist.txt capture-01.cap
+   ```
+
+### Important Notes
+
+⚠️ **Legal Disclaimer**: Only use these tools on networks you own or have explicit permission to test. Unauthorized access to networks is illegal.
+
+⚠️ **WPA3 Limitation**: WPA3-SAE is not supported due to firmware limitations (see Patch 4 section above).
+
+### Troubleshooting
+
+**Injection not working?**
+```bash
+# Check if interface is in monitor mode
+iw dev wlan0mon info
+
+# Test injection
+sudo -S -p '' aireplay-ng -9 wlan0mon
+```
+
+**Low signal strength?**
+```bash
+# Increase TX power (if supported)
+sudo -S -p '' iw dev wlan0mon set txpower fixed 3000
+```
+
+**airmon-ng not working?**
+```bash
+# Use manual setup instead
+sudo -S -p '' ip link set wlan0 down
+sudo -S -p '' iw dev wlan0 set type monitor
+sudo -S -p '' ip link set wlan0 up
+```
+
+---
+
+## Soft AP Mode
+
+The driver supports creating WiFi access points for:
+- Testing client security
+- Creating honeypots
+- Network analysis
+- Captive portals
+
+### Quick AP Setup
+```bash
+# Install dependencies
+sudo -S -p '' apt install hostapd dnsmasq
+
+# Create AP
+sudo -S -p '' ./scripts/softap-setup.sh wlan0 TestNetwork MyPassword123 6
+```
+
+### Manual AP Setup
+```bash
+# Configure hostapd
+cat > /tmp/hostapd.conf << EOF
+interface=wlan0
+driver=nl80211
+ssid=TestNetwork
+hw_mode=g
+channel=6
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=MyPassword123
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP

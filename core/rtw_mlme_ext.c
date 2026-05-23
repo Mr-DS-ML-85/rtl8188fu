@@ -13934,6 +13934,11 @@ u8 sitesurvey_cmd_hdl(_adapter *padapter, u8 *pbuf)
 	struct wifidirect_info *pwdinfo = &padapter->wdinfo;
 #endif
 
+	/* Block scan processing in monitor mode */
+	if (MLME_IS_MONITOR(padapter)) {
+		return H2C_SUCCESS;
+	}
+
 #ifdef DBG_CHECK_FW_PS_STATE
 	if (rtw_fw_ps_state(padapter) == _FAIL) {
 		DBG_871X("scan without leave 32k\n");
